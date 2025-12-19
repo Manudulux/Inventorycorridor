@@ -118,19 +118,27 @@ if sales_file and demand_file and lt_file:
     with tab2:
         st.subheader(f"Supply Chain Topology: {sku}")
         sku_lt = lt_full[lt_full['Product'] == sku]
-        net = Network(height="1500px", width="100%", directed=True, bgcolor="#ffffff")
+        
+        # 1. Set the internal height of the network map to something larger (e.g., 800px)
+        net = Network(height="1000px", width="100%", directed=True, bgcolor="#ffffff")
         
         nodes = set(sku_lt['From_Location']).union(set(sku_lt['To_Location']))
         for n in nodes:
-            # Color destinations differently
             node_color = "#ff4b4b" if n in sku_lt['To_Location'].values else "#31333F"
-            net.add_node(n, label=n, color=node_color, size=20)
+            net.add_node(n, label=n, color=node_color, size=25) # Slightly larger nodes
             
         for _, r in sku_lt.iterrows():
             net.add_edge(r['From_Location'], r['To_Location'], label=f"{r['Lead_Time_Days']}d")
             
+        # Physics makes the network spread out nicely
+        net.toggle_physics(True)
+        
         net.save_graph("net.html")
-        components.html(open("net.html", 'r').read(), height=550)
+        
+        # 2. Match the components.html height to the network height (plus a little extra for margins)
+        components.html(open("net.html", 'r').read(), height=1000)
+        
+        st.caption("🔴 Red = Destination (To_Location) | ⚫ Black = Source (From_Location)")
 
     with tab3:
         st.subheader("Global Time-Phased Inventory Plan")
