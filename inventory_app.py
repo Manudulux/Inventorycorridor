@@ -23,14 +23,19 @@ def aggregate_network_stats(df_forecast, df_stats, df_lt):
     downstream 'To' locations up to their 'From' (Parent) locations.
     """
     results = []
-    for prod in df_forecast['Product'].unique():
-        # Get historical variance (uncertainty) for the product
+    
+    # FIX: Pre-aggregate the forecast by Product/Location to ensure unique indices for network math
+    df_fore_unique = df_forecast.groupby(['Product', 'Location'])['Forecast_Quantity'].mean().reset_index()
+    
+    for prod in df_fore_unique['Product'].unique():
+        # Get historical variance (uncertainty) for the product (already unique)
         p_stats = df_stats[df_stats['Product'] == prod].set_index('Location').to_dict('index')
-        # Get future forecast (demand) for the product
-        p_fore = df_forecast[df_forecast['Product'] == prod].set_index('Location').to_dict('index')
+        
+        # Get future forecast (demand) for the product (now unique via the groupby above)
+        p_fore = df_fore_unique[df_fore_unique['Product'] == prod].set_index('Location').to_dict('index')
         p_lt = df_lt[df_lt['Product'] == prod]
         
-        nodes = set(df_forecast[df_forecast['Product'] == prod]['Location']).union(set(p_lt['From_Location'])).union(set(p_lt['To_Location']))
+        nodes = set(df_fore_unique[df_fore_unique['Product'] == prod]['Location']).union(set(p_lt['From_Location'])).union(set(p_lt['To_Location']))
         
         # Use Forecast_Quantity for demand instead of historical mean
         agg_demand = {n: p_fore.get(n, {'Forecast_Quantity': 0})['Forecast_Quantity'] for n in nodes}
@@ -41,13 +46,12 @@ def aggregate_network_stats(df_forecast, df_stats, df_lt):
             if row['From_Location'] not in children: children[row['From_Location']] = []
             children[row['From_Location']].append(row['To_Location'])
             
+        # Recursive-style aggregation for up to 10 tiers of supply chain depth
         for _ in range(10):
             changed = False
             for parent in nodes:
                 if parent in children:
-                    # Summing downstream future forecasts
                     new_d = p_fore.get(parent, {'Forecast_Quantity': 0})['Forecast_Quantity'] + sum(agg_demand[c] for c in children[parent])
-                    # Summing downstream historical variance
                     new_v = (p_stats.get(parent, {'Local_Std': 0})['Local_Std'])**2 + sum(agg_var[c] for c in children[parent])
                     if abs(new_d - agg_demand[parent]) > 0.01:
                         agg_demand[parent], agg_var[parent] = new_d, new_v
@@ -81,9 +85,7 @@ if s_file and d_file and lt_file:
     stats.columns = ['Product', 'Location', 'Local_Mean', 'Local_Std']
     stats['Local_Std'] = stats['Local_Std'].fillna(stats['Local_Mean'] * 0.2)
 
-    # 2. Network Aggregation (Now using df_d for Future Demand)
-    # Note: Using the first month's forecast or an average depends on your file structure. 
-    # Here we aggregate based on the provided forecast file.
+    # 2. Network Aggregation
     network_stats = aggregate_network_stats(df_d, stats, df_lt)
 
     # 3. Join and Calculate SS
@@ -93,14 +95,13 @@ if s_file and d_file and lt_file:
     results = pd.merge(df_d, network_stats, on=['Product', 'Location'], how='left')
     results = pd.merge(results, node_lt, on=['Product', 'Location'], how='left').fillna({'Agg_Std_Hist':0, 'LT_Mean':7, 'LT_Std':2, 'Agg_Future_Demand':0})
     
-    # SS Formula: Using Aggregated Future Demand for the Volume Risk component
+    # SS Formula: Accounts for aggregated network risk using Future Demand
     results['Safety_Stock'] = (z * np.sqrt((results['LT_Mean']/30)*(results['Agg_Std_Hist']**2) + (results['LT_Std']**2)*(results['Agg_Future_Demand']/30)**2)).round(0)
     results['Max_Corridor'] = results['Safety_Stock'] + results['Forecast_Quantity']
 
     # --- Tabs ---
     tab1, tab2, tab3 = st.tabs(["📈 Inventory Corridor", "🕸️ Network", "📋 Full Plan & Filters"])
     
-    # ... [Tab 1 and Tab 2 code remains the same] ...
     with tab1:
         sku = st.selectbox("Product", results['Product'].unique())
         loc = st.selectbox("Location", results[results['Product']==sku]['Location'].unique())
@@ -113,7 +114,7 @@ if s_file and d_file and lt_file:
         st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        net = Network(height="900px", width="100%", directed=True) # Reduced height for better UX
+        net = Network(height="900px", width="100%", directed=True)
         sku_lt = df_lt[df_lt['Product'] == sku]
         for _, r in sku_lt.iterrows():
             net.add_node(r['From_Location'], label=r['From_Location'], color='#31333F')
@@ -135,7 +136,6 @@ if s_file and d_file and lt_file:
         if f_loc: filtered_df = filtered_df[filtered_df['Location'].isin(f_loc)]
         if f_month: filtered_df = filtered_df[filtered_df['Future_Forecast_Month'].isin(f_month)]
 
-        # AMENDED: Displaying Agg_Future_Demand (Network Demand) vs Forecast_Quantity (Local Demand)
         st.dataframe(filtered_df[[
             'Product', 'Location', 'Future_Forecast_Month', 
             'Forecast_Quantity', 'Agg_Future_Demand', 
