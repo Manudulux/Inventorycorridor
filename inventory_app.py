@@ -97,10 +97,10 @@ if s_file and d_file and lt_file:
         net.save_graph("net.html")
         components.html(open("net.html", 'r').read(), height=1000)
     
-    with tab3:
-        st.subheader("Global Inventory Plan - Dynamic Filters")
+  with tab3:
+        st.subheader("Global Inventory Plan - Interactive Filtering")
         
-        # Filter Columns
+        # Filtering Row
         col1, col2, col3 = st.columns(3)
         with col1:
             f_prod = st.multiselect("Filter Product", results['Product'].unique())
@@ -111,14 +111,15 @@ if s_file and d_file and lt_file:
 
         # Apply Filters
         filtered_df = results.copy()
-        if f_prod:
-            filtered_df = filtered_df[filtered_df['Product'].isin(f_prod)]
-        if f_loc:
-            filtered_df = filtered_df[filtered_df['Location'].isin(f_loc)]
-        if f_month:
-            filtered_df = filtered_df[filtered_df['Future_Forecast_Month'].isin(f_month)]
+        if f_prod: filtered_df = filtered_df[filtered_df['Product'].isin(f_prod)]
+        if f_loc: filtered_df = filtered_df[filtered_df['Location'].isin(f_loc)]
+        if f_month: filtered_df = filtered_df[filtered_df['Future_Forecast_Month'].isin(f_month)]
 
-        st.dataframe(filtered_df[['Product', 'Location', 'Future_Forecast_Month', 'Forecast_Quantity', 'Safety_Stock', 'Min_Corridor', 'Max_Corridor']], use_container_width=True, height=1500)
+        st.dataframe(filtered_df[[
+            'Product', 'Location', 'Future_Forecast_Month', 
+            'Agg_Demand_Hist', 'Forecast_Quantity', 
+            'Safety_Stock', 'Max_Corridor'
+        ]], use_container_width=True, height=1500)
         
         csv = filtered_df.to_csv(index=False).encode('utf-8')
-        st.download_button("Download Filtered Plan", csv, "filtered_inventory_plan.csv", "text/csv")
+        st.download_button("Download Filtered Results", csv, "filtered_inventory_plan.csv", "text/csv")
