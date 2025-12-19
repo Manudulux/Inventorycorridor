@@ -7,148 +7,118 @@ import streamlit.components.v1 as components
 from scipy.stats import norm
 
 # --- Page Config ---
-st.set_page_config(page_title="Time-Phased Inventory Corridor", layout="wide")
-
-st.title("📈 Time-Phased Inventory Corridor")
-st.markdown("Dynamic Safety Stock calculated per month based on Lead Time variability and Forecasted Demand.")
+st.set_page_config(page_title="Multi-Echelon Inventory Optimizer", layout="wide")
+st.title("📈 Multi-Echelon Network Inventory Optimizer")
 
 # --- Helper Functions ---
 def clean_numeric(series):
     return pd.to_numeric(
-        series.astype(str).str.replace(',', '').str.replace('-', '0').str.strip(), 
+        series.astype(str).str.replace(',', '').str.replace('(', '-').str.replace(')', '').str.replace('-', '0').str.strip(), 
         errors='coerce'
     ).fillna(0)
 
-# --- Sidebar ---
+# --- Parameters ---
 st.sidebar.header("⚙️ Optimization Parameters")
-# Defaulting to 99.5% service level
-service_level = st.sidebar.slider("Service Level (%)", 80.0, 99.9, 99.5, step=0.1)
+service_level = st.sidebar.slider("Target Service Level (%)", 80.0, 99.9, 99.0, step=0.1)
 z_score = norm.ppf(service_level / 100)
 
-st.sidebar.header("📂 Data Upload")
-sales_file = st.sidebar.file_uploader("1. Sales Data (sales.csv)", type="csv")
-demand_file = st.sidebar.file_uploader("2. Demand Data (Demand.csv)", type="csv")
-lt_file = st.sidebar.file_uploader("3. Lead Time Data (Lead time.csv)", type="csv")
-
-def process_data(s_raw, d_raw, lt_raw):
-    # Standardize column names (strip spaces)
-    s_raw.columns = [c.strip() for c in s_raw.columns]
-    d_raw.columns = [c.strip() for c in d_raw.columns]
-    lt_raw.columns = [c.strip() for c in lt_raw.columns]
-
-    # Clean Numeric Values
+def process_network_optimization(s_raw, d_raw, lt_raw):
+    # 1. Clean Data
+    for df in [s_raw, d_raw, lt_raw]:
+        df.columns = [c.strip() for c in df.columns]
+    
     s_raw['Quantity'] = clean_numeric(s_raw['Quantity'])
     d_raw['Forecast_Quantity'] = clean_numeric(d_raw['Forecast_Quantity'])
     lt_raw['Lead_Time_Days'] = clean_numeric(lt_raw['Lead_Time_Days'])
     lt_raw['Lead_Time_Std_Dev'] = clean_numeric(lt_raw['Lead_Time_Std_Dev'])
 
-    # 1. Calculate Historical Sales Volatility (per Product/Location)
-    s_stats = s_raw.groupby(['Product', 'Location'])['Quantity'].agg(['mean', 'std']).reset_index()
-    s_stats.columns = ['Product', 'Location', 'Avg_Hist_Sales', 'Std_Hist_Sales']
+    # 2. Upstream Demand Aggregation (The "True Network" Step)
+    # Map which 'To_Location' demand is served by which 'From_Location'
+    network_map = lt_raw[['From_Location', 'To_Location', 'Product']].drop_duplicates()
     
-    # 2. Prepare Lead Time Data (per Product/To_Location)
+    # Group sales by the UPSTREAM parent location
+    child_demand = pd.merge(s_raw, network_map, left_on=['Location', 'Product'], right_on=['To_Location', 'Product'])
+    parent_stats = child_demand.groupby(['Product', 'From_Location'])['Quantity'].agg(['mean', 'std']).reset_index()
+    parent_stats.columns = ['Product', 'Location', 'Aggregated_Avg_Demand', 'Aggregated_Std_Demand']
+
+    # 3. Lead Time Stats
     lt_stats = lt_raw.groupby(['Product', 'To_Location'])[['Lead_Time_Days', 'Lead_Time_Std_Dev']].mean().reset_index()
     lt_stats.rename(columns={'To_Location': 'Location', 'Lead_Time_Days': 'LT_Avg', 'Lead_Time_Std_Dev': 'LT_SD'}, inplace=True)
 
-    # 3. Merge Demand with Stats to calculate Time-Phased Safety Stock
-    # This keeps multiple rows per month for each SKU/Loc
-    merged = pd.merge(d_raw, s_stats, on=['Product', 'Location'], how='left')
-    merged = pd.merge(merged, lt_stats, on=['Product', 'Location'], how='left')
-    
-    # Handle missing values
-    merged['Std_Hist_Sales'] = merged['Std_Hist_Sales'].fillna(0)
-    merged['LT_Avg'] = merged['LT_Avg'].fillna(30)
-    merged['LT_SD'] = merged['LT_SD'].fillna(5)
+    # 4. Final Merge with Future Forecast
+    data = pd.merge(d_raw, parent_stats, on=['Product', 'Location'], how='left')
+    data = pd.merge(data, lt_stats, on=['Product', 'Location'], how='left')
 
-    # 4. TIME-PHASED CALCULATION
-    # SS_t = Z * sqrt( (LT/30)*Std_Sales^2 + Forecast_t^2*(LT_SD/30)^2 )
-    lt_m = merged['LT_Avg'] / 30
-    ltsd_m = merged['LT_SD'] / 30
-    
-    merged['Safety_Stock'] = z_score * np.sqrt(
-        (lt_m * (merged['Std_Hist_Sales']**2)) + 
-        ((merged['Forecast_Quantity']**2) * (ltsd_m**2))
-    )
-    
-    merged['Min_Corridor'] = merged['Safety_Stock']
-    merged['Max_Corridor'] = merged['Safety_Stock'] + merged['Forecast_Quantity']
-    
-    return merged, s_raw, d_raw, lt_raw
+    # Defaults for endpoints
+    data['Aggregated_Std_Demand'] = data['Aggregated_Std_Demand'].fillna(data['Forecast_Quantity'] * 0.2)
+    data['LT_Avg'] = data['LT_Avg'].fillna(7)
+    data['LT_SD'] = data['LT_SD'].fillna(2)
 
-# --- Main App ---
-if sales_file and demand_file and lt_file:
-    df_s, df_d, df_lt = pd.read_csv(sales_file), pd.read_csv(demand_file), pd.read_csv(lt_file)
-    data, s_full, d_full, lt_full = process_data(df_s, df_d, df_lt)
+    # 5. Calculation
+    data['Safety_Stock'] = z_score * np.sqrt(
+        ((data['LT_Avg'] / 30) * (data['Aggregated_Std_Demand']**2)) + 
+        ((data['Forecast_Quantity']**2) * ((data['LT_SD'] / 30)**2))
+    ).round(0)
+    
+    data['Min_Corridor'] = data['Safety_Stock']
+    data['Max_Corridor'] = data['Safety_Stock'] + data['Forecast_Quantity']
+    
+    return data, lt_raw
 
-    tab1, tab2, tab3 = st.tabs(["📉 Corridor Analysis", "🌐 Network Topology", "📋 Global Summary"])
+# --- File Loading ---
+s_file = st.sidebar.file_uploader("1. Sales Data", type="csv")
+d_file = st.sidebar.file_uploader("2. Demand Data", type="csv")
+lt_file = st.sidebar.file_uploader("3. Lead Time Data", type="csv")
+
+if s_file and d_file and lt_file:
+    df_s, df_d, df_lt = pd.read_csv(s_file), pd.read_csv(d_file), pd.read_csv(lt_file)
+    results, network_ref = process_network_optimization(df_s, df_d, df_lt)
+
+    tab1, tab2, tab3 = st.tabs(["📊 Inventory Corridor", "🌐 Network View", "📋 Full Plan & Filters"])
 
     with tab1:
-        c1, c2 = st.columns(2)
-        sku = c1.selectbox("Select SKU", options=sorted(data['Product'].unique()))
-        loc = c2.selectbox("Select Location", options=sorted(data[data['Product']==sku]['Location'].unique()))
+        sku = st.selectbox("Select Product", results['Product'].unique(), key="sb_sku")
+        loc = st.selectbox("Select Location", results[results['Product']==sku]['Location'].unique(), key="sb_loc")
+        plot_df = results[(results['Product']==sku) & (results['Location']==loc)].sort_values('Future_Forecast_Month')
         
-        # Filter data for chart
-        sku_loc_data = data[(data['Product'] == sku) & (data['Location'] == loc)].sort_values('Future_Forecast_Month')
-        
-        # Plotly Corridor
         fig = go.Figure()
-
-        # Shaded Corridor
-        fig.add_trace(go.Scatter(
-            x=sku_loc_data['Future_Forecast_Month'], y=sku_loc_data['Max_Corridor'],
-            mode='lines', line_color='rgba(0,0,0,0)', showlegend=False
-        ))
-        fig.add_trace(go.Scatter(
-            x=sku_loc_data['Future_Forecast_Month'], y=sku_loc_data['Min_Corridor'],
-            fill='tonexty', fillcolor='rgba(0, 123, 255, 0.15)', name='Target Inventory Corridor',
-            line_color='rgba(0,0,0,0)'
-        ))
-
-        # Lines
-        fig.add_trace(go.Scatter(x=sku_loc_data['Future_Forecast_Month'], y=sku_loc_data['Forecast_Quantity'], 
-                                 name='Forecast', line=dict(color='blue', width=2)))
-        fig.add_trace(go.Scatter(x=sku_loc_data['Future_Forecast_Month'], y=sku_loc_data['Safety_Stock'], 
-                                 name='Safety Stock (Time-Phased)', line=dict(color='red', dash='dash')))
-        
-        fig.update_layout(title=f"Time-Phased Corridor: {sku} @ {loc}", hovermode="x unified", height=500)
+        fig.add_trace(go.Scatter(x=plot_df['Future_Forecast_Month'], y=plot_df['Max_Corridor'], name='Max Corridor', line=dict(width=0)))
+        fig.add_trace(go.Scatter(x=plot_df['Future_Forecast_Month'], y=plot_df['Min_Corridor'], name='Safety Stock', fill='tonexty', fillcolor='rgba(0,176,246,0.2)'))
+        fig.add_trace(go.Scatter(x=plot_df['Future_Forecast_Month'], y=plot_df['Forecast_Quantity'], name='Forecast', line=dict(color='black', dash='dot')))
         st.plotly_chart(fig, use_container_width=True)
-        
-        st.info("💡 The Safety Stock (red line) now adjusts every month based on the forecasted volume and lead time uncertainty.")
 
     with tab2:
-        st.subheader(f"Supply Chain Topology: {sku}")
-        sku_lt = lt_full[lt_full['Product'] == sku]
-        
-        # 1. Set the internal height of the network map to something larger (e.g., 800px)
-        net = Network(height="1000px", width="100%", directed=True, bgcolor="#ffffff")
-        
-        nodes = set(sku_lt['From_Location']).union(set(sku_lt['To_Location']))
-        for n in nodes:
-            node_color = "#ff4b4b" if n in sku_lt['To_Location'].values else "#31333F"
-            net.add_node(n, label=n, color=node_color, size=25) # Slightly larger nodes
-            
-        for _, r in sku_lt.iterrows():
-            net.add_edge(r['From_Location'], r['To_Location'], label=f"{r['Lead_Time_Days']}d")
-            
-        # Physics makes the network spread out nicely
-        net.toggle_physics(True)
-        
-        net.save_graph("net.html")
-        
-        # 2. Match the components.html height to the network height (plus a little extra for margins)
-        components.html(open("net.html", 'r').read(), height=1000)
-        
-        st.caption("🔴 Red = Destination (To_Location) | ⚫ Black = Source (From_Location)")
+        net = Network(height="600px", width="100%", directed=True)
+        sku_net = network_ref[network_ref['Product'] == sku]
+        for _, r in sku_net.iterrows():
+            net.add_node(r['From_Location'], label=r['From_Location'], color='#31333F')
+            net.add_node(r['To_Location'], label=r['To_Location'], color='#ff4b4b')
+            net.add_edge(r['From_Location'], r['To_Location'])
+        net.save_graph("network.html")
+        components.html(open("network.html", 'r').read(), height=650)
 
     with tab3:
-        st.subheader("Global Time-Phased Inventory Plan")
-        # Show the full table of all combinations and months
-        st.dataframe(
-            data[['Product', 'Location', 'Future_Forecast_Month', 'Forecast_Quantity', 'Safety_Stock', 'Min_Corridor', 'Max_Corridor']],
-            use_container_width=True,
-            hide_index=True,
-            height=2000
-        )
+        st.subheader("Global Inventory Plan - Dynamic Filters")
+        
+        # Filter Columns
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            f_prod = st.multiselect("Filter Product", results['Product'].unique())
+        with col2:
+            f_loc = st.multiselect("Filter Location", results['Location'].unique())
+        with col3:
+            f_month = st.multiselect("Filter Month", results['Future_Forecast_Month'].unique())
 
-else:
-    st.info("👋 Please upload your CSV files to see the time-phased corridor.")
+        # Apply Filters
+        filtered_df = results.copy()
+        if f_prod:
+            filtered_df = filtered_df[filtered_df['Product'].isin(f_prod)]
+        if f_loc:
+            filtered_df = filtered_df[filtered_df['Location'].isin(f_loc)]
+        if f_month:
+            filtered_df = filtered_df[filtered_df['Future_Forecast_Month'].isin(f_month)]
+
+        st.dataframe(filtered_df[['Product', 'Location', 'Future_Forecast_Month', 'Forecast_Quantity', 'Safety_Stock', 'Min_Corridor', 'Max_Corridor']], use_container_width=True)
+        
+        csv = filtered_df.to_csv(index=False).encode('utf-8')
+        st.download_button("Download Filtered Plan", csv, "filtered_inventory_plan.csv", "text/csv")
