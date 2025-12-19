@@ -97,7 +97,7 @@ if s_file and d_file and lt_file:
         net.save_graph("net.html")
         components.html(open("net.html", 'r').read(), height=1000)
     
-  with tab3:
+    with tab3:
         st.subheader("Global Inventory Plan - Interactive Filtering")
         
         # Filtering Row
