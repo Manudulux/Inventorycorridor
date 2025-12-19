@@ -116,5 +116,6 @@ if sales_file and demand_file and lt_file:
         st.dataframe(data[['Product', 'Location', 'Avg_Sales', 'Std_Sales', 'LT_Avg', 'Safety_Stock', 'Min_Corridor', 'Max_Corridor']])
 
 else:
-    st.info("💡 Please upload the three CSV files from the sidebar to visualize the corridor.")
+    st.info(" Please upload the three CSV files from the sidebar to visualize the corridor.")
+
 
