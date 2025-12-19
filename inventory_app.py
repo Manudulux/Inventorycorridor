@@ -106,32 +106,14 @@ if s_file and d_file and lt_file:
         st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        st.subheader(f"Network Visualization for {sku}")
-        net = Network(height="900px", width="100%", directed=True, bgcolor="#ffffff", font_color="black")
-        
-        # Filter stats for the selected SKU
-        sku_net_stats = network_stats[network_stats['Product'] == sku]
+        net = Network(height="900px", width="100%", directed=True)
         sku_lt = df_lt[df_lt['Product'] == sku]
-        
-        # Build nodes with labels showing location and aggregated demand
-        nodes = set(sku_lt['From_Location']).union(set(sku_lt['To_Location']))
-        for n in nodes:
-            # Get the aggregated demand for this node from our network calculation
-            demand_val = sku_net_stats[sku_net_stats['Location'] == n]['Agg_Demand_Hist'].values
-            demand_label = f"{int(demand_val[0]):,}" if len(demand_val) > 0 else "0"
-            
-            # Source nodes are Black, Sink/Destination nodes are Red
-            color = "#31333F" if n in sku_lt['From_Location'].values else "#ff4b4b"
-            net.add_node(n, label=f"{n}\nDem: {demand_label}", title=f"Aggregated Demand: {demand_label}", color=color, size=30)
-            
-        # Build edges with labels showing lead time
         for _, r in sku_lt.iterrows():
-            net.add_edge(r['From_Location'], r['To_Location'], label=f"{r['Lead_Time_Days']}d", title=f"Lead Time: {r['Lead_Time_Days']} days")
-            
-        net.toggle_physics(True)
+            net.add_node(r['From_Location'], label=r['From_Location'], color='#31333F')
+            net.add_node(r['To_Location'], label=r['To_Location'], color='#ff4b4b')
+            net.add_edge(r['From_Location'], r['To_Location'], label=f"{r['Lead_Time_Days']}d")
         net.save_graph("net.html")
         components.html(open("net.html", 'r').read(), height=950)
-        st.info("💡 **Legend:** Circles = Locations (Labels show Aggregated Demand). Arrows = Movement (Labels show Lead Time in Days).")
 
     with tab3:
         st.subheader("Global Inventory Plan - Interactive Filtering")
