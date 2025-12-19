@@ -8,7 +8,7 @@ from scipy.stats import norm
 
 # --- Page Config ---
 st.set_page_config(page_title="Multi-Echelon Inventory Optimizer", layout="wide")
-st.title("📈 Multi-Echelon Network Inventory Optimizer")
+st.title("📊 Multi-Echelon Network Inventory Optimizer")
 
 # --- Helper Functions ---
 def clean_numeric(series):
@@ -17,20 +17,23 @@ def clean_numeric(series):
         errors='coerce'
     ).fillna(0)
 
-def aggregate_network_stats(df_stats, df_lt):
+def aggregate_network_stats(df_forecast, df_stats, df_lt):
     """
-    True Multi-Echelon Aggregation:
-    Propagates local demand and variance from downstream 'To' locations 
-    up to their 'From' (Parent) locations.
+    AMENDED: Propagates FUTURE Forecast and historical variance from 
+    downstream 'To' locations up to their 'From' (Parent) locations.
     """
     results = []
-    for prod in df_stats['Product'].unique():
+    for prod in df_forecast['Product'].unique():
+        # Get historical variance (uncertainty) for the product
         p_stats = df_stats[df_stats['Product'] == prod].set_index('Location').to_dict('index')
+        # Get future forecast (demand) for the product
+        p_fore = df_forecast[df_forecast['Product'] == prod].set_index('Location').to_dict('index')
         p_lt = df_lt[df_lt['Product'] == prod]
         
-        nodes = set(df_stats[df_stats['Product'] == prod]['Location']).union(set(p_lt['From_Location'])).union(set(p_lt['To_Location']))
+        nodes = set(df_forecast[df_forecast['Product'] == prod]['Location']).union(set(p_lt['From_Location'])).union(set(p_lt['To_Location']))
         
-        agg_demand = {n: p_stats.get(n, {'Local_Mean': 0})['Local_Mean'] for n in nodes}
+        # Use Forecast_Quantity for demand instead of historical mean
+        agg_demand = {n: p_fore.get(n, {'Forecast_Quantity': 0})['Forecast_Quantity'] for n in nodes}
         agg_var = {n: (p_stats.get(n, {'Local_Std': 0})['Local_Std'])**2 for n in nodes}
         
         children = {}
@@ -38,12 +41,13 @@ def aggregate_network_stats(df_stats, df_lt):
             if row['From_Location'] not in children: children[row['From_Location']] = []
             children[row['From_Location']].append(row['To_Location'])
             
-        # Recursive-style aggregation for up to 10 tiers of supply chain depth
         for _ in range(10):
             changed = False
             for parent in nodes:
                 if parent in children:
-                    new_d = p_stats.get(parent, {'Local_Mean': 0})['Local_Mean'] + sum(agg_demand[c] for c in children[parent])
+                    # Summing downstream future forecasts
+                    new_d = p_fore.get(parent, {'Forecast_Quantity': 0})['Forecast_Quantity'] + sum(agg_demand[c] for c in children[parent])
+                    # Summing downstream historical variance
                     new_v = (p_stats.get(parent, {'Local_Std': 0})['Local_Std'])**2 + sum(agg_var[c] for c in children[parent])
                     if abs(new_d - agg_demand[parent]) > 0.01:
                         agg_demand[parent], agg_var[parent] = new_d, new_v
@@ -51,7 +55,7 @@ def aggregate_network_stats(df_stats, df_lt):
             if not changed: break
             
         for n in nodes:
-            results.append({'Product': prod, 'Location': n, 'Agg_Demand_Hist': agg_demand[n], 'Agg_Std_Hist': np.sqrt(agg_var[n])})
+            results.append({'Product': prod, 'Location': n, 'Agg_Future_Demand': agg_demand[n], 'Agg_Std_Hist': np.sqrt(agg_var[n])})
     return pd.DataFrame(results)
 
 # --- Sidebar Parameter & File Upload ---
@@ -72,28 +76,31 @@ if s_file and d_file and lt_file:
     df_lt['Lead_Time_Days'] = clean_numeric(df_lt['Lead_Time_Days'])
     df_lt['Lead_Time_Std_Dev'] = clean_numeric(df_lt['Lead_Time_Std_Dev'])
 
-    # 1. Calc Local Historical Stats
+    # 1. Calc Local Historical Stats (For Variance/Risk)
     stats = df_s.groupby(['Product', 'Location'])['Quantity'].agg(['mean', 'std']).reset_index()
     stats.columns = ['Product', 'Location', 'Local_Mean', 'Local_Std']
     stats['Local_Std'] = stats['Local_Std'].fillna(stats['Local_Mean'] * 0.2)
 
-    # 2. Network Aggregation
-    network_stats = aggregate_network_stats(stats, df_lt)
+    # 2. Network Aggregation (Now using df_d for Future Demand)
+    # Note: Using the first month's forecast or an average depends on your file structure. 
+    # Here we aggregate based on the provided forecast file.
+    network_stats = aggregate_network_stats(df_d, stats, df_lt)
 
     # 3. Join and Calculate SS
     node_lt = df_lt.groupby(['Product', 'To_Location'])[['Lead_Time_Days', 'Lead_Time_Std_Dev']].mean().reset_index()
     node_lt.columns = ['Product', 'Location', 'LT_Mean', 'LT_Std']
 
     results = pd.merge(df_d, network_stats, on=['Product', 'Location'], how='left')
-    results = pd.merge(results, node_lt, on=['Product', 'Location'], how='left').fillna({'Agg_Std_Hist':0, 'LT_Mean':7, 'LT_Std':2, 'Agg_Demand_Hist':0})
+    results = pd.merge(results, node_lt, on=['Product', 'Location'], how='left').fillna({'Agg_Std_Hist':0, 'LT_Mean':7, 'LT_Std':2, 'Agg_Future_Demand':0})
     
-    # SS Formula: Accounts for aggregated network risk
-    results['Safety_Stock'] = (z * np.sqrt((results['LT_Mean']/30)*(results['Agg_Std_Hist']**2) + (results['LT_Std']**2)*(results['Forecast_Quantity']/30)**2)).round(0)
+    # SS Formula: Using Aggregated Future Demand for the Volume Risk component
+    results['Safety_Stock'] = (z * np.sqrt((results['LT_Mean']/30)*(results['Agg_Std_Hist']**2) + (results['LT_Std']**2)*(results['Agg_Future_Demand']/30)**2)).round(0)
     results['Max_Corridor'] = results['Safety_Stock'] + results['Forecast_Quantity']
 
     # --- Tabs ---
-    tab1, tab2, tab3 = st.tabs(["📊 Inventory Corridor", "🌐 Network", "📋 Full Plan & Filters"])
+    tab1, tab2, tab3 = st.tabs(["📈 Inventory Corridor", "🕸️ Network", "📋 Full Plan & Filters"])
     
+    # ... [Tab 1 and Tab 2 code remains the same] ...
     with tab1:
         sku = st.selectbox("Product", results['Product'].unique())
         loc = st.selectbox("Location", results[results['Product']==sku]['Location'].unique())
@@ -101,43 +108,42 @@ if s_file and d_file and lt_file:
         fig = go.Figure([
             go.Scatter(x=plot_df['Future_Forecast_Month'], y=plot_df['Max_Corridor'], name='Max Corridor', line=dict(width=0)),
             go.Scatter(x=plot_df['Future_Forecast_Month'], y=plot_df['Safety_Stock'], name='Safety Stock', fill='tonexty', fillcolor='rgba(0,176,246,0.2)'),
-            go.Scatter(x=plot_df['Future_Forecast_Month'], y=plot_df['Forecast_Quantity'], name='Forecast', line=dict(color='black', dash='dot'))
+            go.Scatter(x=plot_df['Future_Forecast_Month'], y=plot_df['Forecast_Quantity'], name='Local Forecast', line=dict(color='black', dash='dot'))
         ])
         st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        net = Network(height="1200px", width="100%", directed=True)
+        net = Network(height="900px", width="100%", directed=True) # Reduced height for better UX
         sku_lt = df_lt[df_lt['Product'] == sku]
         for _, r in sku_lt.iterrows():
             net.add_node(r['From_Location'], label=r['From_Location'], color='#31333F')
             net.add_node(r['To_Location'], label=r['To_Location'], color='#ff4b4b')
             net.add_edge(r['From_Location'], r['To_Location'], label=f"{r['Lead_Time_Days']}d")
         net.save_graph("net.html")
-        components.html(open("net.html", 'r').read(), height=1250)
+        components.html(open("net.html", 'r').read(), height=950)
 
     with tab3:
         st.subheader("Global Inventory Plan - Interactive Filtering")
         
-        # Filtering Row
         col1, col2, col3 = st.columns(3)
-        with col1:
-            f_prod = st.multiselect("Filter Product", results['Product'].unique())
-        with col2:
-            f_loc = st.multiselect("Filter Location", results['Location'].unique())
-        with col3:
-            f_month = st.multiselect("Filter Month", results['Future_Forecast_Month'].unique())
+        with col1: f_prod = st.multiselect("Filter Product", results['Product'].unique())
+        with col2: f_loc = st.multiselect("Filter Location", results['Location'].unique())
+        with col3: f_month = st.multiselect("Filter Month", results['Future_Forecast_Month'].unique())
 
-        # Apply Filters
         filtered_df = results.copy()
         if f_prod: filtered_df = filtered_df[filtered_df['Product'].isin(f_prod)]
         if f_loc: filtered_df = filtered_df[filtered_df['Location'].isin(f_loc)]
         if f_month: filtered_df = filtered_df[filtered_df['Future_Forecast_Month'].isin(f_month)]
 
+        # AMENDED: Displaying Agg_Future_Demand (Network Demand) vs Forecast_Quantity (Local Demand)
         st.dataframe(filtered_df[[
             'Product', 'Location', 'Future_Forecast_Month', 
-            'Agg_Demand_Hist', 'Forecast_Quantity', 
+            'Forecast_Quantity', 'Agg_Future_Demand', 
             'Safety_Stock', 'Max_Corridor'
-        ]], use_container_width=True, height=1500)
+        ]].rename(columns={
+            'Forecast_Quantity': 'Local Forecast',
+            'Agg_Future_Demand': 'Total Network Demand (Future)'
+        }), use_container_width=True, height=1500)
         
         csv = filtered_df.to_csv(index=False).encode('utf-8')
         st.download_button("Download Filtered Results", csv, "filtered_inventory_plan.csv", "text/csv")
