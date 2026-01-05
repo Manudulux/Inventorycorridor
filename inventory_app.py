@@ -75,7 +75,7 @@ def aggregate_network_stats(df_forecast, df_stats, df_lt):
 
 # --- Sidebar Parameter & File Upload ---
 st.sidebar.header("⚙️ Parameters")
-service_level = st.sidebar.slider("Service Level (%)", 80.0, 99.9, 95.0)/100
+service_level = st.sidebar.slider("Service Level (%)", 90.0, 99.9, 99.0)/100
 z = norm.ppf(service_level)
 
 s_file = st.sidebar.file_uploader("1. Sales Data (Historical)", type="csv")
