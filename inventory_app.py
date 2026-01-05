@@ -149,7 +149,7 @@ if s_file and d_file and lt_file:
         next_month = sorted(results['Future_Forecast_Month'].unique())[0]
         label_data = results[results['Future_Forecast_Month'] == next_month].set_index(['Product', 'Location']).to_dict('index')
 
-        net = Network(height="700px", width="100%", directed=True, bgcolor="#eeeeee")
+        net = Network(height="900px", width="100%", directed=True, bgcolor="#eeeeee")
         sku_lt = df_lt[df_lt['Product'] == sku]
         
         # Include all nodes mentioned in routes for this SKU
@@ -170,7 +170,7 @@ if s_file and d_file and lt_file:
             net.add_edge(r['From_Location'], r['To_Location'], label=f"{r['Lead_Time_Days']}d")
             
         net.save_graph("net.html")
-        components.html(open("net.html", 'r').read(), height=750)
+        components.html(open("net.html", 'r').read(), height=950)
 
     with tab3:
         st.subheader("Global Inventory Plan")
