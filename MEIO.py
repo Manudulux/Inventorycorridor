@@ -399,4 +399,3 @@ if s_file and d_file and lt_file:
 
 else:
     st.info("Please upload all three CSV files in the sidebar to begin.")
-```
