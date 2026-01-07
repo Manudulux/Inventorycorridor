@@ -103,7 +103,7 @@ zero_if_no_fcst = st.sidebar.checkbox("Force Zero SS if No Forecast", value=True
 
 # Rule 2: Capping logic
 apply_cap = st.sidebar.checkbox("Enable SS Capping (% of Forecast)", value=True)
-cap_range = st.sidebar.slider("Cap Range (%)", 0, 300, (50, 200), help="Ensures SS stays between these % of local forecast.")
+cap_range = st.sidebar.slider("Cap Range (%)", 0, 300, (0, 200), help="Ensures SS stays between these % of local forecast.")
 
 st.sidebar.markdown("---")
 s_file = st.sidebar.file_uploader("1. Sales Data (Historical)", type="csv")
