@@ -208,23 +208,45 @@ if s_file and d_file and lt_file:
         ])
         st.plotly_chart(fig, use_container_width=True)
 
-    with tab2:
+with tab2:
         next_month = sorted(results['Period'].unique())[0]
         label_data = results[results['Period'] == next_month].set_index(['Product', 'Location']).to_dict('index')
         sku_lt = df_lt[df_lt['Product'] == sku]
         net = Network(height="900px", width="100%", directed=True, bgcolor="#eeeeee")
         all_nodes = set(sku_lt['From_Location']).union(set(sku_lt['To_Location']))
+        
         for n in all_nodes:
             m = label_data.get((sku, n), {'Forecast': 0, 'Agg_Future_Demand': 0, 'Safety_Stock': 0})
+            
+            # --- UPDATED STYLING LOGIC ---
+            if m['Agg_Future_Demand'] == 0:
+                # Inactive styling: Light grey box with darker grey text
+                node_color = '#DDDDDD' 
+                font_color = '#888888'
+            else:
+                # Active styling: Original colors (Dark for sources, Red for destinations)
+                node_color = '#31333F' if n in sku_lt['From_Location'].values else '#ff4b4b'
+                font_color = 'white'
+            
             label = f"{n}\nFcst: {int(m['Forecast'])}\nNet: {int(m['Agg_Future_Demand'])}\nSS: {int(m['Safety_Stock'])}"
-            color = '#31333F' if n in sku_lt['From_Location'].values else '#ff4b4b'
-            net.add_node(n, label=label, title=label, color=color, shape='box', font={'color': 'white'})
+            
+            net.add_node(
+                n, 
+                label=label, 
+                title=label, 
+                color=node_color, 
+                shape='box', 
+                font={'color': font_color}
+            )
+            # --- END OF UPDATED LOGIC ---
+
         for _, r in sku_lt.iterrows():
             net.add_edge(r['From_Location'], r['To_Location'], label=f"{r['Lead_Time_Days']}d")
+        
         net.save_graph("net.html")
         components.html(open("net.html").read(), height=950)
 
-    with tab3:
+with tab3:
         st.subheader("📋 Global Inventory Plan")
         # --- RE-INTRODUCED FILTERS ---
         col1, col2, col3 = st.columns(3)
